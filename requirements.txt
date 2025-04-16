@@ -1,0 +1,5 @@
+fastapi
+pydantic_settings
+uvicorn
+python-multipart
+kubernetes

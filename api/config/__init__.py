@@ -1,0 +1,1 @@
+from .swagger import settings as swagger_settings
