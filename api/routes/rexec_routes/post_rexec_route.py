@@ -17,14 +17,11 @@ def create_rexec_server(requirments: Annotated[list[str],
     """
     Create a new dspaces instance for a user in a unique namespace.
     """
-    # try:
-    #     user_id = current_user["id"]
-    # except KeyError:
-    #     raise HTTPException(status_code=400, detail="User ID not found in the current user information")
-    user_id = '0'
-
+    group_id = "test-group"
+    user_id = 'test-user'
     try:
-        rexec_services.create_rexec_server_resources(user_id, requirments)
-        return {"message": f"dspaces instance created for user"}
+        msg = rexec_services.create_rexec_server_resources(group_id, user_id, requirments)
+        return {"message": msg}
     except Exception as e:
+        print(type(e), e)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")

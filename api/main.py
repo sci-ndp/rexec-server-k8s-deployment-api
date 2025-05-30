@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 import api.routes as routes
 from .config import swagger_settings
@@ -19,6 +20,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 app.include_router(routes.default_router, include_in_schema=False)
 app.include_router(routes.rexec_router, tags=["Remote Execution"])
