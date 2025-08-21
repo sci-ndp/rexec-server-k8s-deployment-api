@@ -1,0 +1,19 @@
+
+services:
+  api:
+    build: .
+    container_name: rexec-k8s-deployment-api
+    ports:
+      - "8001:8000"
+    environment:
+      - PYTHONPATH=/app
+      - KUBECONFIG=/app/env_variables/.kubeconfig
+    volumes:
+      - ./env_variables/.kubeconfig:/app/env_variables/.kubeconfig:ro # readonly
+    networks:
+      - backend
+    restart: unless-stopped
+
+networks:
+  backend:
+    driver: bridge

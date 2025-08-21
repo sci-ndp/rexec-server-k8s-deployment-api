@@ -1,0 +1,59 @@
+# Git
+.git
+.gitignore
+.gitmodules
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Documentation
+README.md
+*.md
+docs/
+
+# Development files
+docker-compose.yml
+docker-compose.*.yml
+
+# Kubernetes configs (sensitive)
+env_variables/.kubeconfig
+
+# Cache
+.cache/
