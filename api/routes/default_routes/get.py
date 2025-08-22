@@ -10,4 +10,4 @@ async def index(request: Request):
 @router.get("/health")
 async def health_check():
     """Health check endpoint for container orchestration"""
-    return {"status": "healthy", "service": "rexec-api"}
+    return {"status": "healthy", "service": "rexec-deployment-api"}
