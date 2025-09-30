@@ -18,6 +18,7 @@ def get_kubeconfig_path() -> str:
     kubeconfig_from_env = os.environ.get("KUBECONFIG")
     print(f"KUBECONFIG environment variable: {kubeconfig_from_env}")
     if kubeconfig_from_env and os.path.exists(kubeconfig_from_env):
+        # with open(kubeconfig_from_env, "r") as f: print(f.read()) # Debug print
         return kubeconfig_from_env
 
     # Default path inside the Docker container (mounted from env_variables)
@@ -277,7 +278,7 @@ def create_rexec_server_resources(group_id: str, user_id: str, requirements: lis
     manifest_dir = Path(__file__).parent / "k8s"
     manifests = load_yaml_file(manifest_dir.joinpath("rexec-server-deployment.yaml"))
 
-    broker_addr = get_cluster_ip("rexec-broker-internal-ip", "rexec-broker-test")
+    broker_addr = get_cluster_ip("rexec-broker-internal-ip", "rexec-broker") # check ns
 
     # Wait for namespace to be ready
     if not ns_exist:
