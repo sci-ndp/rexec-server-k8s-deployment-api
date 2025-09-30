@@ -24,8 +24,8 @@ spec:
             - |
               echo "pip install ${builtin_requirements} ${user_requirements}";
               pip install ${builtin_requirements} ${user_requirements};
-              echo "git clone https://github.com/bozhang-hpc/SciDx-rexec-server.git server";
-              git clone https://github.com/bozhang-hpc/SciDx-rexec-server.git server;
+              echo "git clone https://github.com/sci-ndp/SciDx-rexec-server.git server";
+              git clone https://github.com/sci-ndp/SciDx-rexec-server.git server;
               echo "cd server";
               cd server;
               echo "python run_server.py ${broker_addr} --broker_port ${broker_port}";
