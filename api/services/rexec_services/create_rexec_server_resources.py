@@ -213,8 +213,10 @@ def create_rexec_server_resources(group_id: str, user_id: str, requirements: lis
     load_kubeconfig(kubeconfig_path)
     # Check if namespace(group) exists
     # If not, generate unique namespace
-    print(f'group id: {group_id} passed to create_rexec_server_resources')
-    namespace = f"rexec-server-{group_id}"
+    # print(f'group id: {group_id} passed to create_rexec_server_resources')
+    # namespace = f"rexec-server-{group_id}"
+    print(f'user id: {user_id} passed to create_rexec_server_resources')
+    namespace = f"rexec-server-{user_id}"
 
     ns_exist = namespace_exists(namespace)
     if not ns_exist:
