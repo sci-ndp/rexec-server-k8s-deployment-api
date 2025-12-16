@@ -1,0 +1,16 @@
+services:
+  rexec-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      REXEC_KUBECONFIG_MOUNT_PATH: ${REXEC_KUBECONFIG_MOUNT_PATH:-/home/appuser/.kube/config}
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - ./:/app
+      - ${REXEC_KUBECONFIG_LOCAL_PATH:-${HOME}/.kube/config-202}:/home/appuser/.kube/config:ro
+    restart: unless-stopped

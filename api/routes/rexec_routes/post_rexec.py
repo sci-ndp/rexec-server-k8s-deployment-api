@@ -1,3 +1,7 @@
+"""
+Register route for provisioning user Rexec environments.
+"""
+
 from fastapi import APIRouter, HTTPException, Depends, Form
 from typing import Annotated, Optional, Dict
 

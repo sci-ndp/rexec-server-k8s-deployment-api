@@ -1,5 +1,6 @@
 fastapi
-pydantic_settings
-uvicorn
-python-multipart
 kubernetes
+packaging
+pydantic_settings
+python-multipart
+uvicorn

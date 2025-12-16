@@ -7,7 +7,7 @@ class SwaggerSettings(BaseSettings):
     swagger_version: str = "0.0.1"
 
     model_config = {
-        "env_file": "./env_variables/.env_swagger",
+        "env_file": ".env",
         "extra": "allow",
     }
 

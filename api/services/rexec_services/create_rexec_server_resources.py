@@ -1,307 +1,502 @@
-import os
-import time
-import yaml
-import packaging.requirements
-import packaging.specifiers
-import subprocess
-import re
+"""
+Utilities for provisioning a user-scoped Rexec server on Kubernetes.
+"""
+
+from __future__ import annotations
+
 import hashlib
+import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable, List, Sequence, Tuple
+
+import yaml
 from kubernetes import client, config
+from kubernetes.client import ApiClient
+from kubernetes.client import exceptions as k8s_exceptions
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.specifiers import Specifier
 
-def get_kubeconfig_path() -> str:
+from api.config.rexec_settings import RexecSettings, rexec_settings
+
+
+class RexecConfigurationError(Exception):
+    """Raised when the Rexec deployment configuration is invalid."""
+
+
+class RexecValidationError(ValueError):
+    """Raised when the request payload is invalid."""
+
+
+class RexecDeploymentError(RuntimeError):
+    """Raised when Kubernetes operations fail."""
+
+
+@dataclass
+class KubernetesClients:
+    """Typed container for the Kubernetes API clients we interact with."""
+
+    api_client: ApiClient
+    core_v1: client.CoreV1Api
+    apps_v1: client.AppsV1Api
+    networking_v1: client.NetworkingV1Api
+    rbac_v1: client.RbacAuthorizationV1Api
+
+
+def _resolve_kubeconfig_path(settings: RexecSettings) -> str:
     """
-    Determine the path to the kubeconfig file, prioritizing environment variables and mounted paths.
-    Falls back to a default location if not found.
+    Resolve the kubeconfig path, preferring the mounted path inside the container
+    and falling back to a host-local path for non-container execution.
     """
-    # Check if KUBECONFIG environment variable is set
-    kubeconfig_from_env = os.environ.get("KUBECONFIG")
-    print(f"KUBECONFIG environment variable: {kubeconfig_from_env}")
-    if kubeconfig_from_env and os.path.exists(kubeconfig_from_env):
-        # with open(kubeconfig_from_env, "r") as f: print(f.read()) # Debug print
-        return kubeconfig_from_env
+    candidates: List[str] = []
 
-    # Default path inside the Docker container (mounted from env_variables)
-    default_kubeconfig_path = "/code/env_variables/.kubeconfig"  # Adjust filename if necessary (e.g., "kubeconfig" or "config")
+    if settings.kubeconfig_mount_path:
+        candidates.append(settings.kubeconfig_mount_path)
+        print(f"kubeconfig mount path: {settings.kubeconfig_mount_path}")
 
-    if os.path.exists(default_kubeconfig_path):
-        return default_kubeconfig_path
+    if settings.kubeconfig_local_path:
+        candidates.append(settings.kubeconfig_local_path)
+        print(f"kubeconfig local path: {settings.kubeconfig_local_path}")
 
-    # If not found, raise an exception or log a warning
-    raise FileNotFoundError(
-        f"Kubeconfig file not found at {default_kubeconfig_path}. "
-        "Please ensure the file exists in the env_variables folder and is mounted correctly in the Docker container, "
-        "or set the KUBECONFIG environment variable."
+    for candidate in candidates:
+        candidate_path = Path(candidate).expanduser()
+        if candidate_path.exists():
+            print(f"Using kubeconfig path: {candidate_path}")
+            return str(candidate_path)
+
+    raise RexecConfigurationError(
+        "Kubeconfig file not found. Set 'REXEC_KUBECONFIG_MOUNT_PATH' for the "
+        "in-container path or 'REXEC_KUBECONFIG_LOCAL_PATH' for the host path."
     )
 
-# Load kubeconfig (assumes service runs with cluster access)
-# Specify the custom kubeconfig path
-kubeconfig_path = get_kubeconfig_path()
 
-def load_kubeconfig(kubeconfig_path):
+def _load_kubernetes_clients(kubeconfig_path: str) -> KubernetesClients:
+    """Load Kubernetes configuration and initialize client instances."""
     try:
         config.load_kube_config(config_file=kubeconfig_path)
-        # config.load_kube_config() # Load default kubeconfig
-    except Exception as e:
-        print(f"Attempting to load kubeconfig from: {kubeconfig_path}")
-        raise Exception(f"Failed to load kubeconfig: {e}")
+    except Exception as exc:  # noqa: BLE001 - preserve original error context
+        raise RexecConfigurationError(
+            f"Failed to load kubeconfig from '{kubeconfig_path}': {exc}"
+        ) from exc
 
-load_kubeconfig(kubeconfig_path)
-api_client = client.ApiClient()
-v1_api = client.CoreV1Api(api_client)
-apps_v1_api = client.AppsV1Api(api_client)
-networking_v1_api = client.NetworkingV1Api(api_client)
-rbac_v1_api = client.RbacAuthorizationV1Api(api_client)
+    api_client = client.ApiClient()
+    return KubernetesClients(
+        api_client=api_client,
+        core_v1=client.CoreV1Api(api_client),
+        apps_v1=client.AppsV1Api(api_client),
+        networking_v1=client.NetworkingV1Api(api_client),
+        rbac_v1=client.RbacAuthorizationV1Api(api_client),
+    )
 
-def load_yaml_file(file_path):
-    """
-    Load a YAML file and return a list of its contents (supports multi-document YAML).
-    """
-    with open(file_path, 'r') as f:
-        return list(yaml.safe_load_all(f))
-    
-def namespace_exists(namespace):
-    v1_api = client.CoreV1Api()
+
+def _load_yaml_documents(file_path: Path) -> List[dict]:
+    """Load one or more YAML documents from a path."""
+    if not file_path.exists():
+        raise RexecConfigurationError(f"Manifest file not found: {file_path}")
+
+    with file_path.open("r", encoding="utf-8") as handle:
+        return [doc for doc in yaml.safe_load_all(handle) if doc]
+
+
+def _namespace_exists(clients: KubernetesClients, namespace: str) -> bool:
+    """Check whether the requested namespace already exists."""
     try:
-        v1_api.read_namespace(name=namespace)
+        clients.core_v1.read_namespace(name=namespace)
         return True
-    except client.exceptions.ApiException as e:
-        if e.status == 404:
+    except k8s_exceptions.ApiException as exc:
+        if exc.status == 404:
             return False
+        raise RexecDeploymentError(
+            f"Failed to read namespace '{namespace}': {exc}"
+        ) from exc
+
+
+def _wait_for_namespace(
+    clients: KubernetesClients,
+    namespace: str,
+    timeout_seconds: int,
+) -> None:
+    """Poll until the namespace is available or the timeout expires."""
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if _namespace_exists(clients, namespace):
+            return
+        time.sleep(1)
+    raise RexecDeploymentError(
+        f"Timeout waiting for namespace '{namespace}' to be created"
+    )
+
+
+def _apply_manifest(
+    clients: KubernetesClients,
+    manifest: dict,
+    namespace: str,
+) -> None:
+    """
+    Apply a namespace-scoped manifest, handling AlreadyExists conflicts gracefully.
+    """
+    kind = manifest.get("kind")
+    metadata = manifest.get("metadata", {})
+    name = metadata.get("name", "<unknown>")
+
+    try:
+        if kind == "Namespace":
+            clients.core_v1.create_namespace(body=manifest)
+        elif kind == "Deployment":
+            clients.apps_v1.create_namespaced_deployment(
+                namespace=namespace,
+                body=manifest,
+            )
+        elif kind == "Service":
+            clients.core_v1.create_namespaced_service(
+                namespace=namespace,
+                body=manifest,
+            )
+        elif kind == "ConfigMap":
+            clients.core_v1.create_namespaced_config_map(
+                namespace=namespace,
+                body=manifest,
+            )
+        elif kind == "Role":
+            clients.rbac_v1.create_namespaced_role(
+                namespace=namespace,
+                body=manifest,
+            )
+        elif kind == "RoleBinding":
+            clients.rbac_v1.create_namespaced_role_binding(
+                namespace=namespace,
+                body=manifest,
+            )
+        elif kind == "Ingress":
+            clients.networking_v1.create_namespaced_ingress(
+                namespace=namespace,
+                body=manifest,
+            )
+        elif kind == "NetworkPolicy":
+            clients.networking_v1.create_namespaced_network_policy(
+                namespace=namespace,
+                body=manifest,
+            )
         else:
-            raise e
-        
-def get_cluster_ip(service_name, namespace="default"):
-    v1_api = client.CoreV1Api()
+            raise RexecDeploymentError(f"Unsupported manifest kind: {kind}")
+    except k8s_exceptions.ApiException as exc:
+        if exc.status == 409:  # AlreadyExists
+            return
+        raise RexecDeploymentError(
+            f"Failed to apply {kind} '{name}': {exc}"
+        ) from exc
+
+
+def _get_cluster_ip(
+    clients: KubernetesClients,
+    service_name: str,
+    namespace: str,
+) -> str:
+    """Retrieve the ClusterIP for a named service."""
     try:
-        service = v1_api.read_namespaced_service(name=service_name, namespace=namespace)
-        return service.spec.cluster_ip
-    except client.exceptions.ApiException as e:
-        raise e
-    
-def check_deployment_label_match(label_selector, namespace="default"):
-    apps_v1 = client.AppsV1Api(api_client)
+        service = clients.core_v1.read_namespaced_service(
+            name=service_name,
+            namespace=namespace,
+        )
+    except k8s_exceptions.ApiException as exc:
+        raise RexecDeploymentError(
+            f"Failed to fetch service '{service_name}' in namespace '{namespace}': {exc}"
+        ) from exc
+
+    cluster_ip = service.spec.cluster_ip
+    if not cluster_ip:
+        raise RexecDeploymentError(
+            f"Service '{service_name}' does not expose a ClusterIP"
+        )
+    return cluster_ip
+
+
+def _get_nodeport_endpoint(
+    clients: KubernetesClients,
+    service_name: str,
+    namespace: str,
+) -> Tuple[str | None, int | None]:
+    """
+    Retrieve an externally reachable host and NodePort for a service.
+    """
     try:
-        deployments = apps_v1.list_namespaced_deployment(namespace, label_selector=label_selector)
-    except client.exceptions.ApiException as e:
-        raise e
-    if deployments.items:
-        return True
-    else:
-        return False
+        service = clients.core_v1.read_namespaced_service(
+            name=service_name,
+            namespace=namespace,
+        )
+    except k8s_exceptions.ApiException as exc:
+        raise RexecDeploymentError(
+            f"Failed to fetch service '{service_name}' in namespace '{namespace}': {exc}"
+        ) from exc
 
-def wait_for_namespace(api_instance, namespace, timeout=60):
-    """
-    Wait until the specified namespace is available.
-    """
-    print(f"Waiting for namespace '{namespace}' to be available...")
-    start_time = time.time()
-    while True:
-        try:
-            api_instance.read_namespace(name=namespace)
-            print(f"Namespace '{namespace}' is ready")
-            return True
-        except client.ApiException as e:
-            if e.status == 404:
-                if time.time() - start_time > timeout:
-                    raise Exception(f"Timeout waiting for namespace '{namespace}' to be created")
-                time.sleep(1)
-            else:
-                raise e
+    node_port: int | None = None
+    host: str | None = None
 
-def apply_manifest(api_client, manifest, namespace=None):
-    """
-    Apply a Kubernetes manifest using the appropriate API.
-    """
-    if manifest is None:
-        return
-    kind = manifest.get('kind')
-    api_version = manifest.get('apiVersion')
-    metadata = manifest.get('metadata', {})
-    name = metadata.get('name')
-
-    print(f"Applying {kind} '{name}'...")
-
-    if kind == 'Namespace':
-        v1_api = client.CoreV1Api(api_client)
-        v1_api.create_namespace(body=manifest)
-    elif kind == 'Deployment':
-        apps_v1 = client.AppsV1Api(api_client)
-        apps_v1.create_namespaced_deployment(namespace=namespace, body=manifest)
-    elif kind == 'Service':
-        v1 = client.CoreV1Api(api_client)
-        v1.create_namespaced_service(namespace=namespace, body=manifest)
-    elif kind == 'ConfigMap':
-        v1 = client.CoreV1Api(api_client)
-        v1.create_namespaced_config_map(namespace=namespace, body=manifest)
-    elif kind == 'Role':
-        rbac_v1 = client.RbacAuthorizationV1Api(api_client)
-        rbac_v1.create_namespaced_role(namespace=namespace, body=manifest)
-    elif kind == 'RoleBinding':
-        rbac_v1 = client.RbacAuthorizationV1Api(api_client)
-        rbac_v1.create_namespaced_role_binding(namespace=namespace, body=manifest)
-    elif kind == 'Ingress':
-        networking_v1 = client.NetworkingV1Api(api_client)
-        networking_v1.create_namespaced_ingress(namespace=namespace, body=manifest)
-    elif kind == 'NetworkPolicy':
-        networking_v1 = client.NetworkingV1Api(api_client)
-        networking_v1.create_namespaced_network_policy(namespace=namespace, body=manifest)
-    else:
-        print(f"Skipping unsupported kind: {kind}")
-        return
-
-    print(f"Successfully applied {kind} '{name}'")
-
-def get_loadbalancer_url(networking_api_instance, api_instance, namespace, ingress_name, 
-                         service_name="nginx-ingress-ingress-nginx-controller", 
-                         ingress_namespace="ingress-nginx", timeout=300):
+    for port in service.spec.ports or []:
+        if port.node_port:
+            node_port = port.node_port
+            break
     
-    # Try to retrieve the domain from the Ingress with retries
-    domain = None
-    retries = 5
-    delay = 2
-    print(f"Attempting to retrieve domain from Ingress '{ingress_name}' in namespace '{namespace}'...")
-    for attempt in range(retries):
-        try:
-            ingress = networking_api_instance.read_namespaced_ingress(name=ingress_name, namespace=namespace)
-            domain = ingress.spec.rules[0].host if ingress.spec.rules else None
-            if domain:
-                print(f"Retrieved domain '{domain}' from Ingress '{ingress_name}'")
-                break
-            print(f"No host found in Ingress '{ingress_name}' on attempt {attempt + 1}/{retries}")
-        except client.ApiException as e:
-            print(f"Attempt {attempt + 1}/{retries} failed to retrieve Ingress '{ingress_name}': {e}")
-        time.sleep(delay)
-    
-    if domain:
-        # Use the domain from Ingress with HTTPS
-        url = f"https://{domain}/{namespace}"
-        print(f"Access URL is: {url}")
-        return url
-    
-    # Fallback to LoadBalancer IP if no domain is retrieved
-    print(f"Failed to retrieve domain after {retries} attempts. Waiting for LoadBalancer endpoint for service '{service_name}' in namespace '{ingress_namespace}'...")
-    start_time = time.time()
-    while True:
-        try:
-            service = api_instance.read_namespaced_service(name=service_name, namespace=ingress_namespace)
-            if service.status.load_balancer.ingress:
-                ingress = service.status.load_balancer.ingress[0]
-                if ingress.hostname:
-                    endpoint = ingress.hostname
-                elif ingress.ip:
-                    endpoint = ingress.ip
-                else:
-                    raise Exception(f"No valid IP or hostname found in LoadBalancer ingress for '{service_name}'")
-                url = f"http://{endpoint}/{namespace}"
-                print(f"LoadBalancer URL is ready: {url}")
-                return url
-            if time.time() - start_time > timeout:
-                raise Exception(f"Timeout waiting for LoadBalancer endpoint for '{service_name}' in '{ingress_namespace}'")
-            time.sleep(5)
-        except client.ApiException as e:
-            if e.status == 404:
-                raise Exception(f"Service '{service_name}' not found in namespace '{ingress_namespace}'")
-            else:
-                raise e
+    try:
+        nodes = clients.core_v1.list_node().items
+    except k8s_exceptions.ApiException as exc:
+        raise RexecDeploymentError(
+            f"Failed to list cluster nodes for NodePort host resolution: {exc}"
+        ) from exc
 
-def create_rexec_server_resources(group_id: str, user_id: str, requirements: list[str]) -> str:
-    """
-    Create all Kubernetes resources for a user's rexec server instance in a unique namespace.
-    """
-    # Refresh k8s token everytime call this function
-    load_kubeconfig(kubeconfig_path)
-    # Check if namespace(group) exists
-    # If not, generate unique namespace
-    # print(f'group id: {group_id} passed to create_rexec_server_resources')
-    # namespace = f"rexec-server-{group_id}"
-    print(f'user id: {user_id} passed to create_rexec_server_resources')
-    namespace = f"rexec-server-{user_id}"
+    for node in nodes:
+        addresses = node.status.addresses or []
+        # Prefer ExternalIP/InternalIP, otherwise take the first available address
+        host = next(
+            (
+                addr.address
+                for addr in addresses
+                if addr.type in ("ExternalIP", "InternalIP")
+            ),
+            host,
+        )
+        if not host and addresses:
+            host = addresses[0].address
+        if host:
+            break
 
-    ns_exist = namespace_exists(namespace)
-    if not ns_exist:
+    return host, node_port
+
+
+def _deployment_with_digest_exists(
+    clients: KubernetesClients,
+    namespace: str,
+    digest: str,
+) -> bool:
+    """Determine if a deployment already exists with the provided digest label."""
+    try:
+        deployments = clients.apps_v1.list_namespaced_deployment(
+            namespace=namespace,
+            label_selector=f"digest={digest}",
+        )
+    except k8s_exceptions.ApiException as exc:
+        raise RexecDeploymentError(
+            f"Failed to list deployments in namespace '{namespace}': {exc}"
+        ) from exc
+
+    return bool(deployments.items)
+
+
+def _parse_requirements(requirements: Iterable[str]) -> tuple[str, List[str]]:
+    """
+    Separate the python version requirement from the rest of the packages.
+    Returns a tuple of (python_version, user_requirements_list).
+    """
+    python_version: str | None = None
+    user_requirements: List[str] = []
+
+    for raw_requirement in requirements:
+        requirement_str = raw_requirement.strip()
+        if not requirement_str:
+            continue
+        try:
+            parsed = Requirement(requirement_str)
+        except InvalidRequirement as exc:
+            raise RexecValidationError(
+                f"Invalid requirement '{requirement_str}': {exc}"
+            ) from exc
+
+        if parsed.name.lower() == "python":
+            try:
+                specifier: Specifier = next(iter(parsed.specifier))
+            except StopIteration as exc:
+                raise RexecValidationError(
+                    "Python requirement must pin the version using '=='."
+                ) from exc
+
+            if specifier.operator != "==":
+                raise RexecValidationError(
+                    "Python requirement must use '==' to pin a single version."
+                )
+            python_version = specifier.version
+        else:
+            user_requirements.append(requirement_str)
+
+    if not python_version:
+        raise RexecValidationError(
+            "A pinned Python version (e.g., 'python==3.11') is required."
+        )
+
+    return python_version, user_requirements
+
+
+def _load_builtin_requirements() -> List[str]:
+    """Read the packaged requirements for the base Rexec server image."""
+    requirements_file = Path(__file__).parent / "SciDx_rexec_server" / "requirements.txt"
+    if not requirements_file.exists():
+        raise RexecConfigurationError(
+            f"Builtin requirements file missing: {requirements_file}"
+        )
+
+    requirements: List[str] = []
+    with requirements_file.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            requirement = line.strip()
+            if requirement and not requirement.startswith("#"):
+                requirements.append(requirement)
+
+    return requirements
+
+
+def _prepare_deployment_manifest(
+    manifest: dict,
+    namespace: str,
+    digest: str,
+    python_version: str,
+    builtin_requirements: Sequence[str],
+    user_requirements: Sequence[str],
+    broker_addr: str,
+    settings: RexecSettings,
+) -> dict:
+    """
+    Mutate a deployment manifest in-place with namespace, labels, image, and command.
+    """
+    manifest.setdefault("metadata", {})
+    manifest["metadata"]["namespace"] = namespace
+
+    labels = manifest["metadata"].setdefault("labels", {})
+    labels["digest"] = digest
+
+    spec = manifest.setdefault("spec", {})
+    template = spec.setdefault("template", {})
+    template_metadata = template.setdefault("metadata", {})
+    template_metadata.setdefault("labels", {})["digest"] = digest
+
+    pod_spec = template.setdefault("spec", {})
+    containers = pod_spec.setdefault("containers", [])
+
+    builtin_requirements_str = " ".join(builtin_requirements)
+    user_requirements_str = " ".join(user_requirements)
+
+    for container in containers:
+        if container.get("name") != settings.container_name:
+            continue
+
+        container["image"] = f"python:{python_version}"
+
+        command = container.get("command")
+        if command and isinstance(command, list) and command:
+            command[-1] = (
+                command[-1]
+                .replace("${builtin_requirements}", builtin_requirements_str)
+                .replace("${user_requirements}", user_requirements_str)
+                .replace("${broker_addr}", broker_addr)
+                .replace("${broker_port}", str(settings.broker_port))
+            )
+
+    return manifest
+
+
+def create_rexec_server_resources(
+    group_id: str,
+    user_id: str,
+    requirements: Iterable[str],
+    *,
+    settings: RexecSettings | None = None,
+) -> str:
+    """
+    Create the Kubernetes resources required for a user's dedicated Rexec server.
+    """
+    resolved_settings = settings or rexec_settings
+    kubeconfig_path = _resolve_kubeconfig_path(resolved_settings)
+    clients = _load_kubernetes_clients(kubeconfig_path)
+
+    namespace = f"{resolved_settings.namespace_prefix}{user_id}"
+
+    namespace_exists = _namespace_exists(clients, namespace)
+    if not namespace_exists:
         namespace_manifest = {
             "apiVersion": "v1",
             "kind": "Namespace",
-            "metadata": {"name": namespace}
+            "metadata": {"name": namespace},
         }
-        print("DEBUG01")
-        try:
-            apply_manifest(api_client, namespace_manifest)
-            print("DEBUG02")
-        except client.ApiException as e:
-            print("DEBUG03")
-            raise e
-    print("DEBUG00")
-    # Extract Python version
-    user_requirements = []
-    for line in requirements:
-        req = packaging.requirements.Requirement(line)
-        if req.name == "python":
-            python_version = packaging.specifiers.Specifier(req.specifier.__str__()).version
-        else:
-            user_requirements.append(line)
-    user_requirements_str = ' '.join(user_requirements)
+        _apply_manifest(clients, namespace_manifest, namespace=namespace)
+        _wait_for_namespace(
+            clients,
+            namespace,
+            resolved_settings.namespace_wait_timeout_seconds,
+        )
 
-    # Calculate SHA-1 digest of the user-provided requirements
-    digest_list = user_requirements.copy()
-    digest_list.sort()
-    digest_list.insert(0, f"python=={python_version}")
-    digest_list_str = ' '.join(digest_list)
-    digest_list_bstr = digest_list_str.encode('utf-8')
-    digest = hashlib.sha1(digest_list_bstr).hexdigest()
+    python_version, user_requirements = _parse_requirements(requirements)
 
-    print("DEBUG0")
-    if ns_exist:
-        digest_exist = check_deployment_label_match(f"digest={digest}", namespace)
-        if digest_exist:
-            print("remote execution server instance with user-provided requirements exists.")
-            return "remote execution server instance with user-provided requirements exists."
+    digest_components = sorted(user_requirements)
+    digest_components.insert(0, f"python=={python_version}")
+    digest = hashlib.sha1(" ".join(digest_components).encode("utf-8")).hexdigest()
 
-    # Read RExec server builtin requirements
-    rexec_server_repo_dir = Path(__file__).parent / "SciDx_rexec_server"
-    builtin_requirements = []
-    with open(rexec_server_repo_dir.joinpath("requirements.txt"), 'r') as fd:
-        for line in fd:
-            req_str = line.strip()
-            if not req_str or req_str == '' or req_str.startswith('#'):
-                continue
-            else:
-                try:
-                    req = packaging.requirements.Requirement(req_str)
-                except packaging.requirements.InvalidRequirement:
-                    print(f"{req_str} does not conform to the specification of dependency specifiers!")
-                    raise
-                else:
-                    builtin_requirements.append(req_str)
-    builtin_requirements_str = ' '.join(builtin_requirements)
+    if namespace_exists and _deployment_with_digest_exists(clients, namespace, digest):
+        return "remote execution server instance with user-provided requirements exists."
 
-    # Define base directory for manifests
+    builtin_requirements = _load_builtin_requirements()
+
     manifest_dir = Path(__file__).parent / "k8s"
-    manifests = load_yaml_file(manifest_dir.joinpath("rexec-server-deployment.yaml"))
+    deployment_manifests = _load_yaml_documents(
+        manifest_dir / resolved_settings.deployment_manifest_name
+    )
 
-    broker_addr = get_cluster_ip("rexec-broker-internal-ip", "rexec-broker") # check ns
+    broker_addr = _get_cluster_ip(
+        clients,
+        resolved_settings.broker_service_name,
+        resolved_settings.broker_namespace,
+    )
 
-    # Wait for namespace to be ready
-    if not ns_exist:
-        wait_for_namespace(v1_api, namespace)
-        print(f'namespace : {namespace} created in create_rexec_server_resources')
+    for manifest in deployment_manifests:
+        if manifest.get("kind") == "Deployment":
+            manifest = _prepare_deployment_manifest(
+                manifest,
+                namespace,
+                digest,
+                python_version,
+                builtin_requirements,
+                user_requirements,
+                broker_addr,
+                resolved_settings,
+            )
+        else:
+            manifest.setdefault("metadata", {})["namespace"] = namespace
 
-    # Apply each manifest with namespace substitution
-    for manifest in manifests:
-        if manifest:
-            for container in manifest["spec"]["template"]["spec"]["containers"]:
-                if container["name"] == "rexec-server":
-                    manifest["metadata"]["labels"]["digest"] = digest
-                    container["image"] = f"python:{python_version}"
-                    cmd_str = (container["command"][-1]
-                                .replace("${builtin_requirements}", builtin_requirements_str)
-                                .replace("${user_requirements}", user_requirements_str)
-                                .replace("${broker_addr}", broker_addr)
-                                .replace("${broker_port}", "5560"))
-                    container["command"][-1] = cmd_str
-            
-            manifest["metadata"]["namespace"] = namespace
-            apply_manifest(api_client, manifest, namespace)
+        _apply_manifest(clients, manifest, namespace=namespace)
 
     return "remote execution server instance created for user."
+
+
+def get_rexec_config(
+    *,
+    api_url: str | None,
+    settings: RexecSettings | None = None,
+) -> dict:
+    """
+    Retrieve broker connection details for an externally reachable broker endpoint.
+    """
+    resolved_settings = settings or rexec_settings
+    kubeconfig_path = _resolve_kubeconfig_path(resolved_settings)
+    clients = _load_kubernetes_clients(kubeconfig_path)
+
+    external_host: str | None = resolved_settings.broker_external_host
+    external_port: int | None = resolved_settings.broker_external_port
+
+    if not external_host or not external_port:
+        svc_name = resolved_settings.broker_external_service_name
+        if svc_name:
+            host, node_port = _get_nodeport_endpoint(
+                clients,
+                svc_name,
+                resolved_settings.broker_namespace,
+            )
+            external_host = external_host or host
+            external_port = external_port or node_port
+
+    external_url = None
+    if external_host and external_port:
+        external_url = f"{external_host}:{external_port}"
+
+    return {
+        "api_url": api_url,
+        "broker_external_host": external_host,
+        "broker_external_port": external_port,
+        "broker_external_url": external_url,
+    }
