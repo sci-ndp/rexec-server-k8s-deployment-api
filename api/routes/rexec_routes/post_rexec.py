@@ -1,17 +1,18 @@
 """
-Register route for provisioning user Rexec environments.
+Register route for provisioning user Rexec server.
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Form
-from typing import Annotated, Optional, Dict
+from typing import Annotated
+
+from fastapi import APIRouter, HTTPException, Form, status
 
 from api.services import rexec_services
-# from api.services.keycloak_services.get_current_user import get_current_user
+from api.services.auth import require_group_membership, validate_token
 
 router = APIRouter()
 
 
-@router.post("/rexec", status_code=200)
+@router.post("/rexec/spawn", status_code=200)
 def create_rexec_server(
     requirments: Annotated[list[str],
         Form(
@@ -19,20 +20,29 @@ def create_rexec_server(
             description="User-specified package list provided by requirements.txt",
         )
     ],
-    user_id: Annotated[str,
+    token: Annotated[str,
         Form(
-            title="User ID",
-            description="Keycloak (currently idp-test) user id"
+            title="User token",
+            description="Bearer token for validating group membership"
         )
     ],
 ):
     """
-    Create a new dspaces instance for a user in a unique namespace.
+    Create a new rexec server for a user in a unique namespace.
     """
-    group_id = "test-group"
-    # user_id = 'test-user'
+    user_info = validate_token(token)
+    matched_group = require_group_membership(user_info)
+
+    resolved_user_id = str(user_info.get("sub") or "").strip()
+    if not resolved_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User id could not be resolved from token.",
+        )
+
+    group_id = matched_group
     try:
-        msg = rexec_services.create_rexec_server_resources(group_id, user_id, requirments)
+        msg = rexec_services.create_rexec_server_resources(group_id, resolved_user_id, requirments)
         return {"message": msg}
     except Exception as e:
         print(type(e), e)

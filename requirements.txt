@@ -3,4 +3,5 @@ kubernetes
 packaging
 pydantic_settings
 python-multipart
+requests
 uvicorn
