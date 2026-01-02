@@ -39,7 +39,7 @@ The compose file binds your kubeconfig into the container, reloads on code chang
 Goal: fill `/.env`. <br>
 Prepare these first:
    1. `REXEC_KUBECONFIG_LOCAL_PATH`, path to your target kubeconfig file on the host machine;
-   2. `REXEC_KUBECONFIG_MOUNT_PATH`, path inside the container where the kubeconfig is mounted (e.g., /home/appuser/.kube/config);
+   2. `REXEC_KUBECONFIG_MOUNT_PATH`, path inside the container where the kubeconfig is mounted (e.g., /home/appuser/.kube/config); Leave it as is if using Docker Compose, otherwise ensure Dockerfile and container run command mount the same path.
 
 If `ENABLE_GROUP_BASED_ACCESS` is set to `True`, also prepare:
 >**IMPORTANT**: 
