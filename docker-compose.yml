@@ -12,5 +12,5 @@ services:
       - "${PORT:-8000}:8000"
     volumes:
       - ./:/app
-      - ${REXEC_KUBECONFIG_LOCAL_PATH:-${HOME}/.kube/config}:${REXEC_KUBECONFIG_MOUNT_PATH:-/app/yutian/config}:ro
+      - ${REXEC_KUBECONFIG_LOCAL_PATH:-${HOME}/.kube/config}:${REXEC_KUBECONFIG_MOUNT_PATH:-/home/appuser/.kube/config}:ro
     restart: unless-stopped
