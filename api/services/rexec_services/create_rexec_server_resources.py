@@ -466,7 +466,6 @@ def create_rexec_server_resources(
 
 def get_rexec_config(
     *,
-    api_url: str | None,
     settings: RexecSettings | None = None,
 ) -> dict:
     """
@@ -495,7 +494,6 @@ def get_rexec_config(
         external_url = f"{external_host}:{external_port}"
 
     return {
-        "api_url": api_url,
         "broker_external_host": external_host,
         "broker_external_port": external_port,
         "broker_external_url": external_url,

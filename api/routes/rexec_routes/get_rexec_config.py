@@ -19,9 +19,7 @@ def get_rexec_config(request: Request):
     Return broker address/port plus the Rexec API URL.
     """
     try:
-        return rexec_services.get_rexec_config(
-            api_url=str(request.url_for("create_rexec_server")),
-        )
+        return rexec_services.get_rexec_config()
     except Exception as exc:
         raise HTTPException(
             status_code=500,
