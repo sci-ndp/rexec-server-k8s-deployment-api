@@ -29,5 +29,5 @@ spec:
               echo "cd server";
               cd server;
               echo "python run_server.py ${broker_addr} --broker_port ${broker_port}";
-              python run_server.py ${broker_addr} --broker_port ${broker_port}
+              python run_server.py ${broker_addr} --broker_port ${broker_port} -v
       restartPolicy: Always

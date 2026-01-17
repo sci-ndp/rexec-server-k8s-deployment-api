@@ -351,10 +351,11 @@ def _prepare_deployment_manifest(
     builtin_requirements: Sequence[str],
     user_requirements: Sequence[str],
     broker_addr: str,
+    user_id: str,
     settings: RexecSettings,
 ) -> dict:
     """
-    Mutate a deployment manifest in-place with namespace, labels, image, and command.
+    Mutate a deployment manifest in-place with namespace, labels, image, and env vars
     """
     manifest.setdefault("metadata", {})
     manifest["metadata"]["namespace"] = namespace
@@ -377,7 +378,13 @@ def _prepare_deployment_manifest(
         if container.get("name") != settings.container_name:
             continue
 
+        # Set the container image to the specified Python version
         container["image"] = f"python:{python_version}"
+
+        # Set environment variable for user_id; for identifying user-specific server
+        env = container.setdefault("env", [])
+        if not any(item.get("name") == "REXEC_USER_ID" for item in env):
+            env.append({"name": "REXEC_USER_ID", "value": user_id})
 
         command = container.get("command")
         if command and isinstance(command, list) and command:
@@ -454,6 +461,7 @@ def create_rexec_server_resources(
                 builtin_requirements,
                 user_requirements,
                 broker_addr,
+                user_id,
                 resolved_settings,
             )
         else:
