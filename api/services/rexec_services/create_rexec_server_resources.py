@@ -469,7 +469,7 @@ def create_rexec_server_resources(
 
         _apply_manifest(clients, manifest, namespace=namespace)
 
-    return "remote execution server instance created for user."
+    return f"Remote Execution server created for user: {user_id}"
 
 
 def get_rexec_config(

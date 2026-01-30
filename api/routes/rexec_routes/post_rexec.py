@@ -41,9 +41,14 @@ def create_rexec_server(
         )
 
     group_id = matched_group
+    username = str(user_info.get('username')).strip()
     try:
         msg = rexec_services.create_rexec_server_resources(group_id, resolved_user_id, requirments)
-        return {"message": msg}
+        return {
+            "Status": msg,
+            "Username": username,
+            "NDP_Endpoint_membership": group_id,
+        }
     except Exception as e:
         print(type(e), e)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
