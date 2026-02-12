@@ -8,6 +8,7 @@ class RexecSettings(BaseSettings):
 
     kubeconfig_local_path: str | None = None
     kubeconfig_mount_path: str | None = "/code/env_variables/.kubeconfig"
+    use_in_cluster_config: bool = False
     namespace_prefix: str = "rexec-server-"
     namespace_wait_timeout_seconds: int = 60
     broker_service_name: str = "rexec-broker-internal-ip"

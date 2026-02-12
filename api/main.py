@@ -3,13 +3,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 import api.routes as routes
-from .config import swagger_settings
+from .config import app_settings, swagger_settings
 
 # Create a FastAPI app instance with custom Swagger UI settings
 app = FastAPI(
     title=swagger_settings.swagger_title,
     description=swagger_settings.swagger_description,
     version=swagger_settings.swagger_version,
+    root_path=app_settings.root_path or "",
 )
 
 # Add CORS middleware to allow cross-origin requests from any origin

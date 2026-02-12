@@ -10,18 +10,18 @@ router = APIRouter()
 
 
 @router.get(
-    "/rexec/broker-config",
+    "/broker-config",
     summary="Get Rexec Broker Configuration",
     description="Retrieve broker connection details for the caller's remote execution environment.",
 )
-def get_rexec_config(request: Request):
+def get_rexec_broker_config(request: Request):
     """
     Return broker address/port plus the Rexec API URL.
     """
     try:
-        return rexec_services.get_rexec_config()
+        return rexec_services.get_rexec_broker_config()
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to retrieve Rexec configuration: {exc}",
+            detail=f"Failed to retrieve Rexec broker configuration: {exc}",
         )

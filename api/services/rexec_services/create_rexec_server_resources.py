@@ -43,11 +43,14 @@ class KubernetesClients:
     rbac_v1: client.RbacAuthorizationV1Api
 
 
-def _resolve_kubeconfig_path(settings: RexecSettings) -> str:
+def _resolve_kubeconfig_path(settings: RexecSettings) -> str | None:
     """
     Resolve the kubeconfig path, preferring the mounted path inside the container
     and falling back to a host-local path for non-container execution.
     """
+    if settings.use_in_cluster_config:
+        return None
+
     candidates: List[str] = []
 
     if settings.kubeconfig_mount_path:
@@ -66,17 +69,29 @@ def _resolve_kubeconfig_path(settings: RexecSettings) -> str:
 
     raise RexecConfigurationError(
         "Kubeconfig file not found. Set 'REXEC_KUBECONFIG_MOUNT_PATH' for the "
-        "in-container path or 'REXEC_KUBECONFIG_LOCAL_PATH' for the host path."
+        "in-container path or 'REXEC_KUBECONFIG_LOCAL_PATH' for the host path, "
+        "or enable 'REXEC_USE_IN_CLUSTER_CONFIG=true'."
     )
 
 
-def _load_kubernetes_clients(kubeconfig_path: str) -> KubernetesClients:
+def _load_kubernetes_clients(
+    kubeconfig_path: str | None,
+    *,
+    use_in_cluster_config: bool,
+) -> KubernetesClients:
     """Load Kubernetes configuration and initialize client instances."""
     try:
-        config.load_kube_config(config_file=kubeconfig_path)
+        if use_in_cluster_config:
+            config.load_incluster_config()
+        else:
+            if not kubeconfig_path:
+                raise RexecConfigurationError(
+                    "Kubeconfig path is required unless in-cluster config is enabled."
+                )
+            config.load_kube_config(config_file=kubeconfig_path)
     except Exception as exc:  # noqa: BLE001 - preserve original error context
         raise RexecConfigurationError(
-            f"Failed to load kubeconfig from '{kubeconfig_path}': {exc}"
+            f"Failed to load Kubernetes config: {exc}"
         ) from exc
 
     api_client = client.ApiClient()
@@ -411,7 +426,10 @@ def create_rexec_server_resources(
     """
     resolved_settings = settings or rexec_settings
     kubeconfig_path = _resolve_kubeconfig_path(resolved_settings)
-    clients = _load_kubernetes_clients(kubeconfig_path)
+    clients = _load_kubernetes_clients(
+        kubeconfig_path,
+        use_in_cluster_config=resolved_settings.use_in_cluster_config,
+    )
 
     namespace = f"{resolved_settings.namespace_prefix}{user_id}"
 
@@ -445,12 +463,14 @@ def create_rexec_server_resources(
         manifest_dir / resolved_settings.deployment_manifest_name
     )
 
+    # Get broker internal ClusterIP for Rexec server to connect to
     broker_addr = _get_cluster_ip(
         clients,
         resolved_settings.broker_service_name,
         resolved_settings.broker_namespace,
     )
 
+    # Patch the Deployment(./k8s/rexec_server_deployment.yaml) manifests with dynamic values
     for manifest in deployment_manifests:
         if manifest.get("kind") == "Deployment":
             manifest = _prepare_deployment_manifest(
@@ -472,7 +492,7 @@ def create_rexec_server_resources(
     return f"Remote Execution server created for user: {user_id}"
 
 
-def get_rexec_config(
+def get_rexec_broker_config(
     *,
     settings: RexecSettings | None = None,
 ) -> dict:
@@ -481,7 +501,10 @@ def get_rexec_config(
     """
     resolved_settings = settings or rexec_settings
     kubeconfig_path = _resolve_kubeconfig_path(resolved_settings)
-    clients = _load_kubernetes_clients(kubeconfig_path)
+    clients = _load_kubernetes_clients(
+        kubeconfig_path,
+        use_in_cluster_config=resolved_settings.use_in_cluster_config,
+    )
 
     external_host: str | None = resolved_settings.broker_external_host
     external_port: int | None = resolved_settings.broker_external_port

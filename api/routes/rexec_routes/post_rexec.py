@@ -12,7 +12,7 @@ from api.services.auth import require_group_membership, validate_token
 router = APIRouter()
 
 
-@router.post("/rexec/spawn", status_code=200)
+@router.post("/spawn", status_code=200)
 def create_rexec_server(
     requirments: Annotated[list[str],
         Form(
