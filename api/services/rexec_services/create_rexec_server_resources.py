@@ -202,29 +202,6 @@ def _apply_manifest(
         ) from exc
 
 
-def _get_cluster_ip(
-    clients: KubernetesClients,
-    service_name: str,
-    namespace: str,
-) -> str:
-    """Retrieve the ClusterIP for a named service."""
-    try:
-        service = clients.core_v1.read_namespaced_service(
-            name=service_name,
-            namespace=namespace,
-        )
-    except k8s_exceptions.ApiException as exc:
-        raise RexecDeploymentError(
-            f"Failed to fetch service '{service_name}' in namespace '{namespace}': {exc}"
-        ) from exc
-
-    cluster_ip = service.spec.cluster_ip
-    if not cluster_ip:
-        raise RexecDeploymentError(
-            f"Service '{service_name}' does not expose a ClusterIP"
-        )
-    return cluster_ip
-
 
 def _get_nodeport_endpoint(
     clients: KubernetesClients,
@@ -463,11 +440,10 @@ def create_rexec_server_resources(
         manifest_dir / resolved_settings.deployment_manifest_name
     )
 
-    # Get broker internal ClusterIP for Rexec server to connect to
-    broker_addr = _get_cluster_ip(
-        clients,
-        resolved_settings.broker_service_name,
-        resolved_settings.broker_namespace,
+    broker_addr = (
+        f"{resolved_settings.broker_service_name}"
+        f".{resolved_settings.broker_namespace}"
+        f".svc.cluster.local"
     )
 
     # Patch the Deployment(./k8s/rexec_server_deployment.yaml) manifests with dynamic values
