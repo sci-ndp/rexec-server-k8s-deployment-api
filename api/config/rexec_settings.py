@@ -7,7 +7,9 @@ class RexecSettings(BaseSettings):
     """Settings that control the Rexec deployment integration."""
 
     kubeconfig_local_path: str | None = None
-    kubeconfig_mount_path: str | None = "/code/env_variables/.kubeconfig"
+    # Canonical in-container kubeconfig path; keep in sync with the docker-compose
+    # bind-mount target. Set REXEC_KUBECONFIG_MOUNT_PATH only to override it.
+    kubeconfig_mount_path: str | None = "/home/appuser/.kube/config"
     use_in_cluster_config: bool = False
     namespace_prefix: str = "rexec-server-"
     namespace_wait_timeout_seconds: int = 60
