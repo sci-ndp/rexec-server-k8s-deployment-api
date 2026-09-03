@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable
 
 from api.config.rexec_settings import RexecSettings, rexec_settings
 
@@ -26,10 +26,9 @@ def _prepare_deployment_manifest(
     namespace: str,
     digest: str,
     python_version: str,
-    builtin_requirements: Sequence[str],
-    user_requirements: Sequence[str],
     broker_addr: str,
     user_id: str,
+    configmap_name: str,
     settings: RexecSettings,
 ) -> dict:
     """
@@ -47,10 +46,12 @@ def _prepare_deployment_manifest(
     template_metadata.setdefault("labels", {})["digest"] = digest
 
     pod_spec = template.setdefault("spec", {})
-    containers = pod_spec.setdefault("containers", [])
 
-    builtin_requirements_str = " ".join(builtin_requirements)
-    user_requirements_str = " ".join(user_requirements)
+    for volume in pod_spec.get("volumes", []):
+        if volume.get("name") == "requirements":
+            volume.setdefault("configMap", {})["name"] = configmap_name
+
+    containers = pod_spec.setdefault("containers", [])
 
     for container in containers:
         if container.get("name") != settings.container_name:
@@ -64,12 +65,23 @@ def _prepare_deployment_manifest(
         if not any(item.get("name") == "REXEC_USER_ID" for item in env):
             env.append({"name": "REXEC_USER_ID", "value": user_id})
 
+        container["resources"] = {
+            "requests": {
+                "cpu": settings.container_cpu_request,
+                "memory": settings.container_memory_request,
+                "ephemeral-storage": settings.container_ephemeral_storage_request,
+            },
+            "limits": {
+                "cpu": settings.container_cpu_limit,
+                "memory": settings.container_memory_limit,
+                "ephemeral-storage": settings.container_ephemeral_storage_limit,
+            },
+        }
+
         command = container.get("command")
         if command and isinstance(command, list) and command:
             command[-1] = (
                 command[-1]
-                .replace("${builtin_requirements}", builtin_requirements_str)
-                .replace("${user_requirements}", user_requirements_str)
                 .replace("${broker_addr}", broker_addr)
                 .replace("${broker_port}", str(settings.broker_port))
             )
@@ -91,7 +103,9 @@ def create_rexec_server_resources(
     clients = get_kubernetes_clients(resolved_settings)
 
     namespace = f"{resolved_settings.namespace_prefix}{user_id}"
-
+    
+    # Check if the namespace already exists
+    # If not, create it
     namespace_present = namespace_exists(clients, namespace)
     if not namespace_present:
         namespace_manifest = {
@@ -106,22 +120,41 @@ def create_rexec_server_resources(
             resolved_settings.namespace_wait_timeout_seconds,
         )
 
+    # Parse the user input requirements 
+    # to separate the Python version from other packages and validate them
     python_version, user_requirements = parse_requirements(requirements)
 
+    # Compute a digest of the requirements to uniquely identify this server config
     digest_components = sorted(user_requirements)
     digest_components.insert(0, f"python=={python_version}")
     digest = hashlib.sha1(" ".join(digest_components).encode("utf-8")).hexdigest()
 
+    # Check if a deployment with the same requirements already exists
+    # If it does, return a message indicating that the server already exists
     if namespace_present and deployment_with_digest_exists(clients, namespace, digest):
         return "remote execution server instance with user-provided requirements exists."
 
     builtin_requirements = load_builtin_requirements()
+
+    # Requirements are shipped to the pod as a mounted file
+    # rather than interpolated into a shell command
+    configmap_name = f"rexec-server-requirements-{digest[:12]}"
+    requirements_content = "\n".join([*builtin_requirements, *user_requirements]) + "\n"
+    configmap_manifest = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"name": configmap_name, "namespace": namespace},
+        "data": {"requirements.txt": requirements_content},
+    }
+    # Apply the ConfigMap manifest for the requirements to the cluster
+    apply_manifest(clients, configmap_manifest, namespace=namespace)
 
     manifest_dir = Path(__file__).parent / "manifests"
     deployment_manifests = load_yaml_documents(
         manifest_dir / resolved_settings.deployment_manifest_name
     )
 
+    # Retrieve the broker address from environment set in rexec_settings.py
     broker_addr = (
         f"{resolved_settings.broker_service_name}"
         f".{resolved_settings.broker_namespace}"
@@ -136,10 +169,9 @@ def create_rexec_server_resources(
                 namespace,
                 digest,
                 python_version,
-                builtin_requirements,
-                user_requirements,
                 broker_addr,
                 user_id,
+                configmap_name, # input requirements cm
                 resolved_settings,
             )
         else:

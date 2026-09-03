@@ -22,6 +22,15 @@ class RexecSettings(BaseSettings):
     container_name: str = "rexec-server"
     deployment_manifest_name: str = "rexec-server-deployment.yaml"
 
+    # Resource ceilings applied to every rexec-server pod. No per-user override --
+    # a client-supplied size is never trusted directly.
+    container_cpu_request: str = "250m"
+    container_cpu_limit: str = "2"
+    container_memory_request: str = "512Mi"
+    container_memory_limit: str = "4Gi"
+    container_ephemeral_storage_request: str = "512Mi"
+    container_ephemeral_storage_limit: str = "2Gi"
+
     model_config = {
         "env_file": ".env",
         "env_prefix": "REXEC_",

@@ -31,6 +31,11 @@ def parse_requirements(requirements: Iterable[str]) -> tuple[str, List[str]]:
             raise RexecValidationError(
                 f"Invalid requirement '{requirement_str}': {exc}"
             ) from exc
+        
+        if parsed.url:
+            raise RexecValidationError(
+                f"Direct URL references are not allowed: '{requirement_str}'"
+            )
 
         if parsed.name.lower() == "python":
             try:
@@ -46,7 +51,9 @@ def parse_requirements(requirements: Iterable[str]) -> tuple[str, List[str]]:
                 )
             python_version = specifier.version
         else:
-            user_requirements.append(requirement_str)
+            # Store packaging's own canonical rendering, not the raw user text --
+            # this is what ends up on disk in the requirements ConfigMap.
+            user_requirements.append(str(parsed))
 
     if not python_version:
         raise RexecValidationError(

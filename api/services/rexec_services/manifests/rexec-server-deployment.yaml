@@ -14,16 +14,24 @@ spec:
       labels:
         app: rexec-server
     spec:
+      volumes:
+        - name: requirements
+          configMap:
+            name: requirements-placeholder
       containers:
         - name: rexec-server
           image:
           imagePullPolicy: Always
+          volumeMounts:
+            - name: requirements
+              mountPath: /etc/rexec/requirements.txt
+              subPath: requirements.txt
           command:
             - sh
             - -c
             - |
-              echo "pip install ${builtin_requirements} ${user_requirements}";
-              pip install ${builtin_requirements} ${user_requirements};
+              echo "pip install -r /etc/rexec/requirements.txt";
+              pip install -r /etc/rexec/requirements.txt;
               echo "git clone https://github.com/sci-ndp/SciDx-rexec-server.git server";
               git clone https://github.com/sci-ndp/SciDx-rexec-server.git server;
               echo "cd server";
