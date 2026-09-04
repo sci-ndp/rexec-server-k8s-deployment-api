@@ -7,6 +7,7 @@ from .create_rexec_server import create_rexec_server_resources
 from .delete_rexec_server import delete_rexec_server_resources
 from .exceptions import (
     RexecConfigurationError,
+    RexecDeploymentConflictError,
     RexecDeploymentError,
     RexecValidationError,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "delete_rexec_server_resources",
     "get_rexec_broker_config",
     "RexecConfigurationError",
+    "RexecDeploymentConflictError",
     "RexecDeploymentError",
     "RexecValidationError",
 ]

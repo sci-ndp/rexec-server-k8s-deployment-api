@@ -94,6 +94,7 @@ def create_rexec_server_resources(
     user_id: str,
     requirements: Iterable[str],
     *,
+    force: bool = False,
     settings: RexecSettings | None = None,
 ) -> str:
     """
@@ -132,7 +133,10 @@ def create_rexec_server_resources(
     # Check if a deployment with the same requirements already exists
     # If it does, return a message indicating that the server already exists
     if namespace_present and deployment_with_digest_exists(clients, namespace, digest):
-        return "remote execution server instance with user-provided requirements exists."
+        return (
+            f"No changes: a Rexec server with these exact requirements is "
+            f"already running for user {user_id}."
+        )
 
     builtin_requirements = load_builtin_requirements()
 
@@ -162,6 +166,7 @@ def create_rexec_server_resources(
     )
 
     # Patch the Deployment(./manifests/rexec-server-deployment.yaml) manifests with dynamic values
+    deployment_outcome: str | None = None
     for manifest in deployment_manifests:
         if manifest.get("kind") == "Deployment":
             manifest = _prepare_deployment_manifest(
@@ -174,9 +179,16 @@ def create_rexec_server_resources(
                 configmap_name, # input requirements cm
                 resolved_settings,
             )
+            deployment_outcome = apply_manifest(
+                clients, manifest, namespace=namespace, force=force,
+            )
         else:
             manifest.setdefault("metadata", {})["namespace"] = namespace
+            apply_manifest(clients, manifest, namespace=namespace)
 
-        apply_manifest(clients, manifest, namespace=namespace)
-
+    if deployment_outcome == "replaced":
+        return (
+            f"Rexec server for user {user_id} was replaced with the new "
+            f"requirements; the job it was previously running was interrupted."
+        )
     return f"Remote Execution server created for user: {user_id}"

@@ -12,7 +12,11 @@ import yaml
 from kubernetes import client
 from kubernetes.client import exceptions as k8s_exceptions
 
-from ..exceptions import RexecConfigurationError, RexecDeploymentError
+from ..exceptions import (
+    RexecConfigurationError,
+    RexecDeploymentConflictError,
+    RexecDeploymentError,
+)
 from .client import KubernetesClients
 
 
@@ -58,9 +62,22 @@ def apply_manifest(
     clients: KubernetesClients,
     manifest: dict,
     namespace: str,
-) -> None:
+    force: bool = False,
+) -> str | None:
     """
     Apply a namespace-scoped manifest, handling AlreadyExists conflicts gracefully.
+
+    A Deployment conflict is treated differently from every other kind: since a
+    same-digest respawn is already short-circuited before this is called (see
+    deployment_with_digest_exists), a 409 here can only mean a Deployment with
+    *different* requirements is already running. Replacing it restarts the pod
+    and interrupts any job it was running, so that only happens when the caller
+    explicitly opts in via `force`; otherwise this raises RexecDeploymentConflictError
+    so the caller can decide, instead of the old behavior of silently reporting
+    "created" while leaving the running pod untouched.
+
+    Returns "created" or "replaced" for a Deployment (so the caller can report
+    which happened); None for every other kind.
     """
     kind = manifest.get("kind")
     metadata = manifest.get("metadata", {})
@@ -70,10 +87,32 @@ def apply_manifest(
         if kind == "Namespace":
             clients.core_v1.create_namespace(body=manifest)
         elif kind == "Deployment":
-            clients.apps_v1.create_namespaced_deployment(
-                namespace=namespace,
-                body=manifest,
-            )
+            try:
+                clients.apps_v1.create_namespaced_deployment(
+                    namespace=namespace,
+                    body=manifest,
+                )
+                return "created"
+            except k8s_exceptions.ApiException as exc:
+                if exc.status != 409:
+                    raise
+                if not force:
+                    raise RexecDeploymentConflictError(
+                        f"A Deployment '{name}' with different requirements is "
+                        f"already running in namespace '{namespace}'. Pass "
+                        f"force=True to replace it (this interrupts any job it "
+                        f"is currently running)."
+                    ) from exc
+                existing = clients.apps_v1.read_namespaced_deployment(
+                    name=name, namespace=namespace,
+                )
+                manifest["metadata"]["resourceVersion"] = (
+                    existing.metadata.resource_version
+                )
+                clients.apps_v1.replace_namespaced_deployment(
+                    name=name, namespace=namespace, body=manifest,
+                )
+                return "replaced"
         elif kind == "Service":
             clients.core_v1.create_namespaced_service(
                 namespace=namespace,

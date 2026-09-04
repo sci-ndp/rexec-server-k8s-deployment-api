@@ -13,3 +13,8 @@ class RexecValidationError(ValueError):
 
 class RexecDeploymentError(RuntimeError):
     """Raised when Kubernetes operations fail."""
+
+
+class RexecDeploymentConflictError(RexecDeploymentError):
+    """Raised when a Deployment with different requirements is already running
+    and the caller did not opt in (force=True) to replacing it."""
