@@ -28,9 +28,9 @@ def create_rexec_server(
             description="Bearer token for validating group membership"
         )
     ],
-    force: Annotated[bool,
+    force_reinstall: Annotated[bool,
         Form(
-            title="Force replace",
+            title="Force reinstall",
             description=(
                 "If a server with different requirements is already running for "
                 "this user, replace it instead of returning a 409 conflict. This "
@@ -56,7 +56,7 @@ def create_rexec_server(
     username = str(user_info.get('username')).strip()
     try:
         msg = rexec_services.create_rexec_server_resources(
-            group_id, resolved_user_id, requirments, force=force,
+            group_id, resolved_user_id, requirments, force_reinstall=force_reinstall,
         )
         return {
             "Status": msg,

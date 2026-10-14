@@ -17,4 +17,4 @@ class RexecDeploymentError(RuntimeError):
 
 class RexecDeploymentConflictError(RexecDeploymentError):
     """Raised when a Deployment with different requirements is already running
-    and the caller did not opt in (force=True) to replacing it."""
+    and the caller did not opt in (force_reinstall=True) to replacing it."""

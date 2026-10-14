@@ -62,7 +62,7 @@ def apply_manifest(
     clients: KubernetesClients,
     manifest: dict,
     namespace: str,
-    force: bool = False,
+    force_reinstall: bool = False,
 ) -> str | None:
     """
     Apply a namespace-scoped manifest, handling AlreadyExists conflicts gracefully.
@@ -72,7 +72,7 @@ def apply_manifest(
     deployment_with_digest_exists), a 409 here can only mean a Deployment with
     *different* requirements is already running. Replacing it restarts the pod
     and interrupts any job it was running, so that only happens when the caller
-    explicitly opts in via `force`; otherwise this raises RexecDeploymentConflictError
+    explicitly opts in via `force_reinstall`; otherwise this raises RexecDeploymentConflictError
     so the caller can decide, instead of the old behavior of silently reporting
     "created" while leaving the running pod untouched.
 
@@ -96,11 +96,11 @@ def apply_manifest(
             except k8s_exceptions.ApiException as exc:
                 if exc.status != 409:
                     raise
-                if not force:
+                if not force_reinstall:
                     raise RexecDeploymentConflictError(
                         f"A Deployment '{name}' with different requirements is "
                         f"already running in namespace '{namespace}'. Pass "
-                        f"force=True to replace it (this interrupts any job it "
+                        f"force_reinstall=True to replace it (this interrupts any job it "
                         f"is currently running)."
                     ) from exc
                 existing = clients.apps_v1.read_namespaced_deployment(

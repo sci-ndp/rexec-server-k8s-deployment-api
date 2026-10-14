@@ -94,7 +94,7 @@ def create_rexec_server_resources(
     user_id: str,
     requirements: Iterable[str],
     *,
-    force: bool = False,
+    force_reinstall: bool = False,
     settings: RexecSettings | None = None,
 ) -> str:
     """
@@ -180,7 +180,7 @@ def create_rexec_server_resources(
                 resolved_settings,
             )
             deployment_outcome = apply_manifest(
-                clients, manifest, namespace=namespace, force=force,
+                clients, manifest, namespace=namespace, force_reinstall=force_reinstall,
             )
         else:
             manifest.setdefault("metadata", {})["namespace"] = namespace
